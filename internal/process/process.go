@@ -39,32 +39,24 @@ func FindAgentSessions() []*Session {
 }
 
 func findProcesses(agent string) []*Session {
-	// Get PIDs of main agent processes (not child processes like MCP servers)
-	out, err := exec.Command("pgrep", "-f", fmt.Sprintf("^%s", agent)).Output()
+	// Use ps directly instead of pgrep (more reliable across platforms)
+	// Find processes where command is exactly the agent name
+	out, err := exec.Command("ps", "-eo", "pid=,tty=,command=").Output()
 	if err != nil {
-		// Also try without anchor for symlinked binaries
-		out, err = exec.Command("pgrep", "-x", agent).Output()
-		if err != nil {
-			return nil
-		}
+		return nil
 	}
 
 	var sessions []*Session
 	seenTTYs := make(map[string]bool)
 
-	pids := strings.Split(strings.TrimSpace(string(out)), "\n")
-	for _, pidStr := range pids {
-		if pidStr == "" {
+	// Match lines where command is exactly "claude" or "claude --flags"
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
 			continue
 		}
 
-		// Get process info
-		info, err := exec.Command("ps", "-o", "pid=,tty=,command=", "-p", pidStr).Output()
-		if err != nil {
-			continue
-		}
-
-		fields := strings.Fields(strings.TrimSpace(string(info)))
+		fields := strings.Fields(line)
 		if len(fields) < 3 {
 			continue
 		}
@@ -73,6 +65,13 @@ func findProcesses(agent string) []*Session {
 		fmt.Sscanf(fields[0], "%d", &pid)
 		tty := fields[1]
 		command := strings.Join(fields[2:], " ")
+
+		// Check if this is the agent we're looking for
+		// Command should start with agent name (e.g., "claude" or "claude --continue")
+		cmdParts := strings.Fields(command)
+		if len(cmdParts) == 0 || cmdParts[0] != agent {
+			continue
+		}
 
 		// Skip if no TTY or background process
 		if tty == "??" || tty == "" {
@@ -86,7 +85,7 @@ func findProcesses(agent string) []*Session {
 		seenTTYs[tty] = true
 
 		// Find running version from child process
-		runningVersion := findRunningVersion(pidStr, agent)
+		runningVersion := findRunningVersion(fmt.Sprintf("%d", pid), agent)
 
 		sessions = append(sessions, &Session{
 			PID:            pid,
