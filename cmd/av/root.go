@@ -7,7 +7,9 @@ import (
 	"github.com/buddyh/av/internal/output"
 	"github.com/buddyh/av/internal/process"
 	"github.com/buddyh/av/internal/tmux"
+	"github.com/buddyh/av/internal/tui"
 	"github.com/buddyh/av/internal/version"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 )
 
@@ -132,10 +134,11 @@ func newCheckCmd(flags *rootFlags, out *output.Output) *cobra.Command {
 
 func newRestartCmd(flags *rootFlags, out *output.Output) *cobra.Command {
 	var all bool
+	var yes bool
 
 	cmd := &cobra.Command{
 		Use:   "restart",
-		Short: "Restart outdated sessions (tmux only)",
+		Short: "Restart outdated sessions (interactive picker)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			claudeInstalled := version.GetInstalledClaude()
 			codexInstalled := version.GetInstalledCodex()
@@ -144,7 +147,8 @@ func newRestartCmd(flags *rootFlags, out *output.Output) *cobra.Command {
 			tmuxPanes := tmux.GetPanes()
 			process.EnrichWithTmux(sessions, tmuxPanes)
 
-			var toRestart []*process.Session
+			// Filter to restartable sessions
+			var candidates []*process.Session
 			for _, s := range sessions {
 				if s.TmuxSession == "" {
 					continue // Can't restart non-tmux
@@ -153,13 +157,40 @@ func newRestartCmd(flags *rootFlags, out *output.Output) *cobra.Command {
 				if s.Agent == "codex" {
 					currentVersion = codexInstalled
 				}
-				if all || s.RunningVersion != currentVersion {
-					toRestart = append(toRestart, s)
+				if all || (s.RunningVersion != "" && s.RunningVersion != currentVersion) {
+					candidates = append(candidates, s)
 				}
 			}
 
-			if len(toRestart) == 0 {
+			if len(candidates) == 0 {
 				out.Success("All sessions are up to date")
+				return nil
+			}
+
+			var toRestart []*process.Session
+
+			// Interactive picker unless --yes flag
+			if !yes && !flags.json {
+				picker := tui.NewPicker(sessions, claudeInstalled, codexInstalled)
+				p := tea.NewProgram(picker)
+				finalModel, err := p.Run()
+				if err != nil {
+					return fmt.Errorf("picker error: %w", err)
+				}
+
+				result := finalModel.(tui.PickerModel)
+				if result.Cancelled() {
+					out.Info("Cancelled")
+					return nil
+				}
+
+				toRestart = result.SelectedSessions()
+			} else {
+				toRestart = candidates
+			}
+
+			if len(toRestart) == 0 {
+				out.Info("No sessions selected")
 				return nil
 			}
 
@@ -177,6 +208,7 @@ func newRestartCmd(flags *rootFlags, out *output.Output) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().BoolVar(&all, "all", false, "Restart all sessions, even if current")
+	cmd.Flags().BoolVar(&all, "all", false, "Include all sessions, even if current")
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "Skip interactive picker, restart all outdated")
 	return cmd
 }
