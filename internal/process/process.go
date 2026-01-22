@@ -18,6 +18,7 @@ type Session struct {
 	Command        string `json:"command"`
 	TmuxSession    string `json:"tmux_session,omitempty"`
 	WorkingDir     string `json:"working_dir,omitempty"`
+	HasActiveWork  bool   `json:"has_active_work,omitempty"`
 }
 
 // versionRegex extracts version from paths like /versions/2.1.14

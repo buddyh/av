@@ -13,10 +13,12 @@ import (
 var (
 	selectedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))  // green
 	unselectedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))   // gray
+	disabledStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))   // dark gray
 	cursorStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))  // yellow
 	headerStyle     = lipgloss.NewStyle().Bold(true)
 	versionOld      = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))   // red
 	versionNew      = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))  // green
+	activeWorkStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))   // red
 	helpStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))   // dark gray
 )
 
@@ -25,6 +27,7 @@ type SessionItem struct {
 	Session        *process.Session
 	Selected       bool
 	CurrentVersion string // installed version to compare against
+	Disabled       bool   // can't restart (has active work)
 }
 
 // PickerModel is the bubbletea model for session picker
@@ -46,10 +49,12 @@ func NewPicker(sessions []*process.Session, installedClaude, installedCodex stri
 		}
 		// Only include sessions that need restart
 		if s.RunningVersion != "" && s.RunningVersion != currentVersion && s.TmuxSession != "" {
+			disabled := s.HasActiveWork
 			items = append(items, SessionItem{
 				Session:        s,
-				Selected:       true, // default selected
+				Selected:       !disabled, // default selected unless disabled
 				CurrentVersion: currentVersion,
+				Disabled:       disabled,
 			})
 		}
 	}
@@ -84,13 +89,15 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor++
 			}
 		case " ", "x":
-			if len(m.items) > 0 {
+			if len(m.items) > 0 && !m.items[m.cursor].Disabled {
 				m.items[m.cursor].Selected = !m.items[m.cursor].Selected
 			}
 		case "a":
-			// Select all
+			// Select all (except disabled)
 			for i := range m.items {
-				m.items[i].Selected = true
+				if !m.items[i].Disabled {
+					m.items[i].Selected = true
+				}
 			}
 		case "n":
 			// Select none
@@ -121,7 +128,10 @@ func (m PickerModel) View() string {
 
 		checkbox := "[ ]"
 		style := unselectedStyle
-		if item.Selected {
+		if item.Disabled {
+			checkbox = "[-]"
+			style = disabledStyle
+		} else if item.Selected {
 			checkbox = "[x]"
 			style = selectedStyle
 		}
@@ -135,12 +145,18 @@ func (m PickerModel) View() string {
 			versionOld.Render(item.Session.RunningVersion),
 			versionNew.Render(item.CurrentVersion))
 
-		line := fmt.Sprintf("%s %s %-20s %-38s %s",
+		status := ""
+		if item.Disabled {
+			status = activeWorkStyle.Render(" (busy)")
+		}
+
+		line := fmt.Sprintf("%s %s %-20s %-38s %s%s",
 			cursor,
 			checkbox,
 			item.Session.TmuxSession,
 			path,
-			version)
+			version,
+			status)
 
 		b.WriteString(style.Render(line))
 		b.WriteString("\n")

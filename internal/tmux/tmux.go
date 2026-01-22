@@ -3,7 +3,10 @@ package tmux
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -45,13 +48,112 @@ func GetPanes() map[string]process.TmuxPane {
 	return panes
 }
 
-// RestartSession sends exit to a tmux session, waits, then runs claude --continue
-func RestartSession(sessionName string, agent string) error {
-	// Send Ctrl+C first to interrupt any running operation
-	if err := sendKeys(sessionName, "C-c"); err != nil {
-		return fmt.Errorf("failed to send Ctrl+C: %w", err)
+// CapturePane captures the last N lines from a tmux pane
+func CapturePane(sessionName string, lines int) (string, error) {
+	out, err := exec.Command("tmux", "capture-pane", "-t", sessionName, "-p", "-S", fmt.Sprintf("-%d", lines)).Output()
+	if err != nil {
+		return "", err
 	}
-	time.Sleep(500 * time.Millisecond)
+	return string(out), nil
+}
+
+// Patterns for detecting active work
+var (
+	// Active operation - shows "ctrl+c to interrupt"
+	ctrlCPattern = regexp.MustCompile(`ctrl\+c to interrupt`)
+	// Running indicator with ellipsis (… or ...)
+	runningPattern = regexp.MustCompile(`Running[….]+`)
+	// Active spinner patterns
+	spinnerPattern = regexp.MustCompile(`[⏺✻].*(?:Thinking|Reading|Writing|Manifesting|Editing)[….]*`)
+)
+
+// HasActiveWork checks if the session has background tasks running
+func HasActiveWork(sessionName string) bool {
+	content, err := CapturePane(sessionName, 20)
+	if err != nil {
+		return false
+	}
+
+	// Check for active work indicators - only the last 20 lines
+	// The "ctrl+c to interrupt" is the clearest signal of active work
+	if ctrlCPattern.MatchString(content) {
+		return true
+	}
+	if runningPattern.MatchString(content) {
+		return true
+	}
+	if spinnerPattern.MatchString(content) {
+		return true
+	}
+	return false
+}
+
+// GetSessionID finds the Claude Code session ID for a given working directory
+func GetSessionID(workingDir string) string {
+	if workingDir == "" {
+		return ""
+	}
+
+	// Convert path to Claude's project path format
+	// /Users/buddy/repos/foo -> -Users-buddy-repos-foo
+	projectPath := strings.ReplaceAll(workingDir, "/", "-")
+	if strings.HasPrefix(projectPath, "-") {
+		projectPath = projectPath[1:] // Remove leading dash
+	}
+
+	home, _ := os.UserHomeDir()
+	sessionsDir := filepath.Join(home, ".claude", "projects", projectPath)
+
+	// Find most recent .jsonl file
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		return ""
+	}
+
+	var latestFile string
+	var latestTime time.Time
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		if info.ModTime().After(latestTime) {
+			latestTime = info.ModTime()
+			latestFile = entry.Name()
+		}
+	}
+
+	if latestFile == "" {
+		return ""
+	}
+
+	// Extract session ID (filename without .jsonl)
+	return strings.TrimSuffix(latestFile, ".jsonl")
+}
+
+// RestartSession sends exit to a tmux session, waits, then resumes claude
+func RestartSession(sessionName string, agent string, workingDir string) error {
+	// Send Ctrl+C multiple times to:
+	// 1. Interrupt any running operation
+	// 2. Clear any suggested text in the prompt
+	for i := 0; i < 3; i++ {
+		if err := sendKeys(sessionName, "C-c"); err != nil {
+			return fmt.Errorf("failed to send Ctrl+C: %w", err)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// Clear the input line (Ctrl+U) to remove any partial text
+	if err := sendKeys(sessionName, "C-u"); err != nil {
+		return fmt.Errorf("failed to send Ctrl+U: %w", err)
+	}
+	time.Sleep(100 * time.Millisecond)
 
 	// Send exit command
 	if err := sendKeys(sessionName, "exit"); err != nil {
@@ -64,11 +166,17 @@ func RestartSession(sessionName string, agent string) error {
 	// Wait for process to exit
 	time.Sleep(2 * time.Second)
 
-	// Start new session with --continue
+	// Build resume command
 	var cmd string
 	switch agent {
 	case "claude":
-		cmd = "claude --continue"
+		// Try to get specific session ID for --resume
+		sessionID := GetSessionID(workingDir)
+		if sessionID != "" {
+			cmd = fmt.Sprintf("claude --resume %s", sessionID)
+		} else {
+			cmd = "claude --continue"
+		}
 	case "codex":
 		cmd = "codex --continue"
 	default:

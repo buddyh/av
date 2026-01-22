@@ -76,6 +76,13 @@ func runStatus(out *output.Output, flags *rootFlags) error {
 	tmuxPanes := tmux.GetPanes()
 	process.EnrichWithTmux(sessions, tmuxPanes)
 
+	// Check for active work in each session
+	for _, s := range sessions {
+		if s.TmuxSession != "" {
+			s.HasActiveWork = tmux.HasActiveWork(s.TmuxSession)
+		}
+	}
+
 	// Output
 	if flags.json {
 		return out.JSON(map[string]any{
@@ -147,6 +154,13 @@ func newRestartCmd(flags *rootFlags, out *output.Output) *cobra.Command {
 			tmuxPanes := tmux.GetPanes()
 			process.EnrichWithTmux(sessions, tmuxPanes)
 
+			// Check for active work in each session
+			for _, s := range sessions {
+				if s.TmuxSession != "" {
+					s.HasActiveWork = tmux.HasActiveWork(s.TmuxSession)
+				}
+			}
+
 			// Filter to restartable sessions
 			var candidates []*process.Session
 			for _, s := range sessions {
@@ -197,7 +211,13 @@ func newRestartCmd(flags *rootFlags, out *output.Output) *cobra.Command {
 			out.Info(fmt.Sprintf("Restarting %d session(s)...", len(toRestart)))
 
 			for _, s := range toRestart {
-				if err := tmux.RestartSession(s.TmuxSession, s.Agent); err != nil {
+				// Check for active work before restarting
+				if tmux.HasActiveWork(s.TmuxSession) {
+					out.Warn(fmt.Sprintf("Skipped %s (has active work)", s.TmuxSession))
+					continue
+				}
+
+				if err := tmux.RestartSession(s.TmuxSession, s.Agent, s.WorkingDir); err != nil {
 					out.Warn(fmt.Sprintf("Failed to restart %s: %v", s.TmuxSession, err))
 				} else {
 					out.Success(fmt.Sprintf("Restarted %s", s.TmuxSession))
