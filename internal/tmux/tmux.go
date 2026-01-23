@@ -3,9 +3,7 @@ package tmux
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -88,57 +86,8 @@ func HasActiveWork(sessionName string) bool {
 	return false
 }
 
-// GetSessionID finds the Claude Code session ID for a given working directory
-func GetSessionID(workingDir string) string {
-	if workingDir == "" {
-		return ""
-	}
-
-	// Convert path to Claude's project path format
-	// /Users/buddy/repos/foo -> -Users-buddy-repos-foo
-	projectPath := strings.ReplaceAll(workingDir, "/", "-")
-	if strings.HasPrefix(projectPath, "-") {
-		projectPath = projectPath[1:] // Remove leading dash
-	}
-
-	home, _ := os.UserHomeDir()
-	sessionsDir := filepath.Join(home, ".claude", "projects", projectPath)
-
-	// Find most recent .jsonl file
-	entries, err := os.ReadDir(sessionsDir)
-	if err != nil {
-		return ""
-	}
-
-	var latestFile string
-	var latestTime time.Time
-
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
-			continue
-		}
-
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-
-		if info.ModTime().After(latestTime) {
-			latestTime = info.ModTime()
-			latestFile = entry.Name()
-		}
-	}
-
-	if latestFile == "" {
-		return ""
-	}
-
-	// Extract session ID (filename without .jsonl)
-	return strings.TrimSuffix(latestFile, ".jsonl")
-}
-
-// RestartSession sends exit to a tmux session, waits, then resumes claude
-func RestartSession(sessionName string, agent string, workingDir string) error {
+// RestartSession sends exit to a tmux session, waits, then resumes with --continue
+func RestartSession(sessionName string, agent string) error {
 	// Send Ctrl+C multiple times to:
 	// 1. Interrupt any running operation
 	// 2. Clear any suggested text in the prompt
@@ -166,17 +115,12 @@ func RestartSession(sessionName string, agent string, workingDir string) error {
 	// Wait for process to exit
 	time.Sleep(2 * time.Second)
 
-	// Build resume command
+	// Build resume command - use --continue which resumes the most recent
+	// session in the current directory (handled correctly by Claude)
 	var cmd string
 	switch agent {
 	case "claude":
-		// Try to get specific session ID for --resume
-		sessionID := GetSessionID(workingDir)
-		if sessionID != "" {
-			cmd = fmt.Sprintf("claude --resume %s", sessionID)
-		} else {
-			cmd = "claude --continue"
-		}
+		cmd = "claude --continue"
 	case "codex":
 		cmd = "codex --continue"
 	default:

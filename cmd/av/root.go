@@ -217,7 +217,7 @@ func newRestartCmd(flags *rootFlags, out *output.Output) *cobra.Command {
 					continue
 				}
 
-				if err := tmux.RestartSession(s.TmuxSession, s.Agent, s.WorkingDir); err != nil {
+				if err := tmux.RestartSession(s.TmuxSession, s.Agent); err != nil {
 					out.Warn(fmt.Sprintf("Failed to restart %s: %v", s.TmuxSession, err))
 				} else {
 					out.Success(fmt.Sprintf("Restarted %s", s.TmuxSession))
